@@ -1,6 +1,18 @@
 <?php
+
 class GF_Field_Repeater extends GF_Field {
+
+    const ID_PREFIX = 152;
+
 	public $type = 'repeater';
+	public $element = null;
+	public $expotrable = false;
+	public $exportParent = null;
+
+	public function init_ajax() {
+        add_filter('gform_export_fields', array('GF_Field_Repeater', 'gform_export_repeater_fields'), 10, 4);
+        add_filter('gform_entries_field_header_pre_export', array('GF_Field_Repeater', 'gform_export_field_header'), 10, 4);
+    }
 
 	public static function init_admin() {
 		$admin_page = rgget('page');
@@ -24,6 +36,7 @@ class GF_Field_Repeater extends GF_Field {
 		add_filter('gform_pre_render', array('GF_Field_Repeater', 'gform_unhide_children_validation'));
 		add_filter('gform_pre_validation', array('GF_Field_Repeater', 'gform_bypass_children_validation'));
 		add_filter('gform_counter_script', array('GF_Field_Repeater', 'set_counter_script'), 10, 4);
+
 	}
 
 	public static function gform_enqueue_scripts($form, $is_ajax) {
@@ -579,12 +592,161 @@ class GF_Field_Repeater extends GF_Field {
 	}
 
 	public function get_value_export($entry, $input_id = '', $use_text = false, $is_csv = false) {
-		if (empty($input_id)) { $input_id = $this->id; }
-		$output = rgar($entry, $input_id);
-		$output = GF_Field_Repeater::get_value_entry_detail($output, '', false, 'text', 'email');
-		$output = preg_replace("/[\r\n]+/", ", ", trim($output));
+		$realElement = $this->element;
+		$output = '';
+		if ( $realElement instanceof GF_Field ) {
+            $input_id = $realElement->id;
+            $parentID = $this->exportParent;
+            $repeaterEntry = $entry[$parentID];
+            $parentElement = GFFormsModel::unserialize( $repeaterEntry );
+            $output = $parentElement[$this->index][$input_id];
+        }
 		return $output;
 	}
+
+    public static function gform_export_field_header( $header, $form, $field )
+    {
+        return $field->label;
+    }
+
+	// Define the columns for export
+    public static function gform_export_repeater_fields( $form )
+    {
+        // Get the Repeater field
+        $repeaterIDs = self::get_repeater_ids( $form );
+        $repeaterChildrenIDs = [];
+        $repeaterMaxCounts = [];
+        $formId = (int) $form['id'];
+	    $entries = GFAPI::get_entries( $formId );
+	    foreach ( $entries as $entry ) {
+	        foreach ( $repeaterIDs as $repeaterID ) {
+	            $repeaterEntry = $entry[$repeaterID];
+	            $unserializedEntry = GFFormsModel::unserialize( $repeaterEntry );
+	            // Now count how many repeater entries we have for this from the json
+                $repeaterCount = count( $unserializedEntry );
+                // Save the max
+                if ( isset( $repeaterMaxCounts[$repeaterID]) ) {
+                    $repeaterMaxCounts[$repeaterID] = max( $repeaterMaxCounts[$repeaterID], $repeaterCount );
+                } else {
+                    $repeaterMaxCounts[$repeaterID] = $repeaterCount;
+                }
+            }
+        }
+
+        $repeaters = [];
+        foreach ( $repeaterIDs as $repeaterID ) {
+
+            $position = 0;
+            foreach ( $form['fields'] as $field ) {
+
+                if ( $field instanceof GF_Field_Repeater &&
+                    $repeaterID == $field->id ) {
+
+                    // Found the repeater. Find the children
+                    $repeater = new stdClass();
+                    $repeater->id = $repeaterID;
+                    $repeater->children = $field->repeaterChildren;
+                    $repeaterChildrenIDs = array_merge( $repeaterChildrenIDs, $repeater->children );
+                    $repeater->position = $position;
+                    $repeater->maxCount = $repeaterMaxCounts[$repeaterID];
+                    $repeater->elements = []; // Array of child repeaters
+                    $repeaters []= $repeater;
+                }
+
+                ++$position;
+            }
+        }
+
+        // repeaterChildren contains an array of arrays with all the repeater children IDs
+        // Now we go through and create the labels
+        foreach ( $repeaters as $repeater ) {
+
+            // Make a label for each, up to maxcount
+            for ( $i = 1; $i <= $repeater->maxCount; ++$i ) {
+                foreach ( $repeater->children as $repeaterChild ) {
+                    $childField = self::get_field_by_id( $form[ 'fields' ], $repeaterChild );
+                    $childField = clone $childField;
+                    $gf_rep = new GF_Field_Repeater();
+                    $childField->label = $gf_rep->label = __( $childField->label . ' ' . $i );
+                    $id = $childField->id.(self::ID_PREFIX + $i);
+                    $gf_rep->id = $id;
+                    if ( is_array( $childField->inputs ) ) {
+                        $inputsClone = $childField->inputs;
+                        $ii = 0;
+                        foreach ( $childField->inputs as $input ) {
+                            $inputsClone[ $ii ][ 'label' ] = $input[ 'label' ];
+                            $id = $gf_rep->id.'.'.$ii;
+                            $inputsClone[ $ii ][ 'id' ] = $id; // KCC here?
+                            $ii++;
+                        }
+                        $childField->inputs = $inputsClone;
+
+                    }
+
+                    $gf_rep->index = $i;
+                    $gf_rep->inputs = $childField->inputs;
+                    $gf_rep->element = $childField;
+                    $gf_rep->expotrable =  true;
+                    $gf_rep->exportParent = $repeater->id;
+                    $repeater->elements []= $gf_rep;
+                }
+            }
+        }
+        // Go through field labels and splice them in at their position
+
+        foreach ( $repeaters as $repeater ) {
+            array_splice( $form['fields'], $repeater->position, 0, $repeater->elements );
+        }
+
+        // remove the repeater fields by unsetting their element in "fields" array
+        $fieldsCopy = $form['fields'];
+        $index = 0;
+        while ( $index < count( $form['fields'] ) )  {
+            $field = $form['fields'][$index];
+            if ( $field instanceof  GF_Field_Repeater &&
+                $field->expotrable === false ) {
+
+                while ( !($field instanceof GF_Field_Repeater_End) ) {
+
+                    $field = $form['fields'][$index];
+                    unset( $fieldsCopy[$index] );
+                    $index++;
+                }
+            }
+
+            $index++;
+        }
+
+        $form['fields'] = $fieldsCopy;
+
+        return $form;
+    }
+
+    public static function get_repeater_ids( $form )
+    {
+        $repeaterIDs = array();
+        foreach ( $form[ 'fields' ] as $key => $field ) {
+            if ( $field->type == 'repeater' ) {
+                $repeaterIDs []= $field->id;
+
+            }
+        }
+
+        return $repeaterIDs;
+    }
+
+    public static function get_field_by_id( $fields, $field_id )
+    {
+        $found = null;
+        foreach ( $fields as $key => $field ) {
+            if ( $field->id == $field_id ) {
+                $found = $field;
+                break;
+            }
+        }
+
+        return $found;
+    }
 
 	public static function gform_hide_children($form) {
 		$form_id = $form['id'];
@@ -774,5 +936,7 @@ class GF_Field_Repeater extends GF_Field {
 
 		return $script;
 	}
+
+
 }
 GF_Fields::register(new GF_Field_Repeater());
