@@ -63,6 +63,11 @@ if (class_exists("GFForms")) {
 			return array_merge(parent::scripts(), $scripts);
 		}
 
+		public function init_ajax() {
+            parent::init_ajax();
+            GF_Field_Repeater::init_ajax();
+        }
+
 		public function init_admin() {
 			parent::init_admin();
 			GF_Field_Repeater::init_admin();
