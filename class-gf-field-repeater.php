@@ -804,7 +804,8 @@ class GF_Field_Repeater extends GF_Field {
 
 			if (!empty($repeaterChildren)) {
 				if (in_array($field->id, $repeaterChildren) && !$field->adminOnly) {
-					$form['fields'][$key]['adminOnly'] = true;
+                    $form['fields'][$key]['repeaterRealVisibility'] = $field->visibility;
+                    $form['fields'][$key]['adminOnly'] = true;
 					$form['fields'][$key]['repeaterChildValidationHidden'] = true;
 				}
 			}
@@ -815,13 +816,17 @@ class GF_Field_Repeater extends GF_Field {
 
 	public static function gform_unhide_children_validation($form) {
 		if (GF_Field_Repeater::get_field_index($form) === false) { return $form; }
-		
+		$newformfields = array();
 		foreach($form['fields'] as $key=>$field) {
+		    $newformfields[$key] = $field;
 			if ($field->repeaterChildValidationHidden) {
-				$form['fields'][$key]['adminOnly'] = false;
-				$form['fields'][$key]['repeaterChildValidationHidden'] = false;
+                $newformfields[ $key ][ 'adminOnly' ] = false;
+                $newformfields[$key]['visibility'] = $newformfields[$key]['repeaterRealVisibility'];
+                $newformfields[$key]['repeaterChildValidationHidden'] = false;
 			}
 		}
+
+		$form['fields'] = $newformfields;
 
 		return $form;
 	}
